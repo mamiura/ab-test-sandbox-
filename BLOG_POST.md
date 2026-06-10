@@ -10,7 +10,7 @@ But flags alone are not enough. You need to know what happened during the rollou
 
 In this post, I will walk through building a full experiment stack on top of a 5-step e-commerce funnel. We will cover:
 
-1. A/B testing a checkout button with Datadog Native Feature Flags and Statsig
+1. A/B testing a checkout button with Datadog Native Feature Flags
 2. Tracking errors by variant with a kill switch
 3. Building a Product Analytics funnel to measure drop-off across the full user journey
 4. Going server-side with Node.js and APM
@@ -32,39 +32,15 @@ Simple enough to build in an afternoon. Complex enough to show every layer of th
 
 ---
 
-## Two architectures, one goal
+## How Datadog Feature Flags work
 
-Before writing any code, it is worth understanding the difference between the two approaches.
+Datadog's feature flag product evaluates flags client-side using rules you define in the Datadog UI. The SDK is built on [OpenFeature](https://openfeature.dev/), an open standard, which means you are not locked into Datadog-specific APIs.
 
-### Approach A: Datadog Native Feature Flags
-
-Datadog's own feature flag product evaluates flags client-side using rules you define in the Datadog UI. The SDK is built on [OpenFeature](https://openfeature.dev/), an open standard, which means you are not locked into Datadog-specific APIs.
-
-The key benefit: flag evaluations are **natively correlated** with RUM sessions, errors, and session replays with no extra instrumentation needed.
-
-### Approach B: Statsig + Datadog RUM
-
-Statsig is a dedicated experimentation platform with a more mature statistical engine. You evaluate flags in Statsig, then push the result into Datadog RUM with a single line:
-
-```ts
-datadogRum.addFeatureFlagEvaluation(flagName, value);
-```
-
-This bridge makes Datadog RUM aware of the Statsig evaluation, giving you the same session-level correlation as Approach A, just with Statsig as the flag engine.
-
-### When to use which
-
-| | Datadog Native | Statsig + Datadog RUM |
-|---|---|---|
-| Flag management | Datadog UI | Statsig console |
-| Experimentation stats | Datadog | Statsig (more mature) |
-| Observability | Native, automatic | Via addFeatureFlagEvaluation() bridge |
-| Rollback trigger | Datadog monitor, circuit breaker | Datadog monitor, kills Statsig gate |
-| Best for | Teams all-in on Datadog | Teams wanting dedicated experimentation |
+Flag evaluations are **natively correlated** with RUM sessions, errors, and session replays with no extra instrumentation needed. When an error occurs, you can see exactly which flag variant that user was in.
 
 ---
 
-## Building the browser-side experiment
+## Building the experiment
 
 ### Setup
 
@@ -125,24 +101,6 @@ Call this once when the user is known. It ties every RUM event, including action
 
 ---
 
-## Approach B: wiring in Statsig
-
-```ts
-import { StatsigClient } from '@statsig/js-client';
-import { datadogRum } from '@datadog/browser-rum';
-
-const client = new StatsigClient('client-your-key', { userID: userId });
-await client.initializeAsync();
-
-const inVariant = client.checkGate('checkout_button_variant');
-
-// The only Datadog-specific line you need
-datadogRum.addFeatureFlagEvaluation('checkout_button_variant', inVariant);
-```
-
-From Datadog's perspective, the session looks identical to Approach A.
-
----
 
 ## Adding the kill switch: error tracking by variant
 
