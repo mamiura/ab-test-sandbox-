@@ -1,37 +1,46 @@
-# How to Run Your First A/B Test Without Breaking Production
+# How to Run Your First A/B Test Without Breaking Production and Actually Measure It
 
-You shipped a UI change to 100% of your users. Conversion dropped 12%. You rolled it back three hours later — but by then, thousands of sessions had already hit the broken experience.
+You shipped a UI change to 100% of your users. Conversion dropped 12%. You rolled it back three hours later, but by then thousands of sessions had already hit the broken experience.
 
 This is not a hypothetical. It happens to teams of every size, and it usually happens for the same reason: the change was deployed and exposed to users at the same time. There was no middle ground between "off" and "everyone."
 
-Feature flags fix this. They decouple deployment from release, letting you ship code to production and expose it to users gradually — 1%, 10%, 50% — with a kill switch at every step.
+Feature flags fix this. They decouple deployment from release, letting you ship code to production and expose it to users gradually: 1%, 10%, 50%, with a kill switch at every step.
 
-In this post, I'll walk through building a real A/B test for a checkout button using two approaches: **Datadog Native Feature Flags** and **Statsig + Datadog RUM**. You'll see how each one works, when to use which, and how to wire up error tracking so you can catch problems before they affect your whole user base.
+But flags alone are not enough. You need to know what happened during the rollout: did conversion improve, did errors spike, where did users drop off? That is where observability comes in.
 
-The full sandbox is on GitHub if you want to follow along.
+In this post, I will walk through building a full experiment stack on top of a 5-step e-commerce funnel. We will cover:
+
+1. A/B testing a checkout button with Datadog Native Feature Flags and Statsig
+2. Tracking errors by variant with a kill switch
+3. Building a Product Analytics funnel to measure drop-off across the full user journey
+4. Going server-side with Node.js and APM
+
+The full sandbox is on GitHub if you want to follow along: [github.com/mamiura/ab-test-sandbox-](https://github.com/mamiura/ab-test-sandbox-)
 
 ---
 
 ## The experiment: checkout button copy and color
 
-We're testing two variants of a checkout button:
+We are testing two variants on a checkout button inside a 5-step funnel:
+
+**Landing > Product > Cart > Checkout > Confirmation**
 
 - **Control** — "Buy Now" (blue)
 - **Variant** — "Complete Purchase" (green)
 
-Simple enough to build in an afternoon. Complex enough to show every layer of the stack: flag evaluation, RUM correlation, session replay, error tracking, and rollback.
+Simple enough to build in an afternoon. Complex enough to show every layer of the stack: flag evaluation, RUM correlation, funnel analysis, session replay, error tracking, and rollback.
 
 ---
 
 ## Two architectures, one goal
 
-Before writing any code, it's worth understanding the difference between the two approaches — because they're not interchangeable.
+Before writing any code, it is worth understanding the difference between the two approaches.
 
 ### Approach A: Datadog Native Feature Flags
 
-Datadog's own feature flag product evaluates flags client-side using rules you define in the Datadog UI. The SDK is built on [OpenFeature](https://openfeature.dev/), an open standard, which means you're not locked into Datadog-specific APIs.
+Datadog's own feature flag product evaluates flags client-side using rules you define in the Datadog UI. The SDK is built on [OpenFeature](https://openfeature.dev/), an open standard, which means you are not locked into Datadog-specific APIs.
 
-The key benefit: flag evaluations are **natively correlated** with RUM sessions, errors, and session replays — no extra instrumentation needed. When an error occurs, you can see exactly which flag variant that user was in.
+The key benefit: flag evaluations are **natively correlated** with RUM sessions, errors, and session replays with no extra instrumentation needed.
 
 ### Approach B: Statsig + Datadog RUM
 
@@ -41,7 +50,7 @@ Statsig is a dedicated experimentation platform with a more mature statistical e
 datadogRum.addFeatureFlagEvaluation(flagName, value);
 ```
 
-This bridge makes Datadog RUM aware of the Statsig evaluation, so you get the same session-level correlation as Approach A — just with Statsig as the flag engine.
+This bridge makes Datadog RUM aware of the Statsig evaluation, giving you the same session-level correlation as Approach A, just with Statsig as the flag engine.
 
 ### When to use which
 
@@ -49,8 +58,8 @@ This bridge makes Datadog RUM aware of the Statsig evaluation, so you get the sa
 |---|---|---|
 | Flag management | Datadog UI | Statsig console |
 | Experimentation stats | Datadog | Statsig (more mature) |
-| Observability | Native — automatic | Via `addFeatureFlagEvaluation()` bridge |
-| Rollback trigger | Datadog monitor → circuit breaker | Datadog monitor → kills Statsig gate |
+| Observability | Native, automatic | Via addFeatureFlagEvaluation() bridge |
+| Rollback trigger | Datadog monitor, circuit breaker | Datadog monitor, kills Statsig gate |
 | Best for | Teams all-in on Datadog | Teams wanting dedicated experimentation |
 
 ---
@@ -67,8 +76,6 @@ npm install @datadog/openfeature-browser @openfeature/react-sdk @openfeature/web
 
 ### Initialize the provider
 
-The `DatadogProvider` handles both RUM initialization and flag evaluation. Wire it up at the top of your app, before anything renders:
-
 ```ts
 // main.tsx
 import { OpenFeature } from '@openfeature/web-sdk';
@@ -83,7 +90,7 @@ const provider = new DatadogProvider({
 });
 
 OpenFeature.setProvider(provider, {
-  targetingKey: currentUser.id, // determines which bucket the user falls into
+  targetingKey: currentUser.id,
 });
 
 root.render(
@@ -93,7 +100,7 @@ root.render(
 );
 ```
 
-The `targetingKey` is how Datadog assigns users to variants. Same key always gets the same variant — consistent experience across sessions.
+The `targetingKey` is how Datadog assigns users to variants. The same key always gets the same variant, giving users a consistent experience across sessions.
 
 ### Evaluate the flag in a component
 
@@ -106,38 +113,19 @@ function useCheckoutVariant() {
 }
 ```
 
-That's it. The `DatadogProvider` automatically calls `datadogRum.addFeatureFlagEvaluation()` on every evaluation — your RUM sessions are tagged with the flag result without any extra code.
+The `DatadogProvider` automatically calls `datadogRum.addFeatureFlagEvaluation()` on every evaluation, so your RUM sessions are tagged with the flag result without any extra code.
 
-### The checkout button
+### Track user identity for retention analysis
 
-```tsx
-const variants = {
-  control: { label: 'Buy Now', color: '#1a73e8' },
-  variant: { label: 'Complete Purchase', color: '#2e7d32' },
-};
-
-function CheckoutButton({ variant }: { variant: 'control' | 'variant' }) {
-  const { label, color } = variants[variant];
-
-  function handleClick() {
-    datadogRum.addAction('checkout_clicked', { variant });
-  }
-
-  return (
-    <button style={{ backgroundColor: color }} onClick={handleClick}>
-      {label}
-    </button>
-  );
-}
+```ts
+datadogRum.setUser({ id: userId, name: userName });
 ```
 
-Every click fires a RUM action tagged with the variant. In Datadog, you can filter actions by `@feature_flags.checkout_button_variant` to compare click-through rates between control and variant.
+Call this once when the user is known. It ties every RUM event, including actions, errors, and session replays, to a single user identity. This is what powers retention analysis in Datadog Product Analytics.
 
 ---
 
 ## Approach B: wiring in Statsig
-
-If you're using Statsig, the SDK evaluation callback is the bridge into Datadog:
 
 ```ts
 import { StatsigClient } from '@statsig/js-client';
@@ -148,45 +136,69 @@ await client.initializeAsync();
 
 const inVariant = client.checkGate('checkout_button_variant');
 
-// This is the only Datadog-specific line you need
+// The only Datadog-specific line you need
 datadogRum.addFeatureFlagEvaluation('checkout_button_variant', inVariant);
 ```
 
-From Datadog's perspective, the session looks identical to Approach A. The difference is who evaluated the flag: Statsig's engine, not Datadog's.
+From Datadog's perspective, the session looks identical to Approach A.
 
 ---
 
 ## Adding the kill switch: error tracking by variant
 
-The real power of feature flags isn't the rollout — it's the rollback. But to roll back intelligently, you need to know which variant is causing problems.
-
-Fire errors tagged with the variant context:
+The real power of feature flags is not the rollout, it is the rollback. But to roll back intelligently, you need to know which variant is causing problems.
 
 ```ts
-function simulateCheckoutError(variant: string) {
-  const error = new Error('Payment gateway timeout');
-  error.name = 'CheckoutError';
-  datadogRum.addError(error, { variant });
-}
+const error = new Error('Payment gateway timeout');
+error.name = 'CheckoutError';
+datadogRum.addError(error, { variant });
 ```
 
-In Datadog RUM → Errors, filter by:
+In Datadog **RUM > Errors**, filter by:
 
 ```
 @feature_flags.checkout_button_variant:variant
 ```
 
-You'll see the error rate split by variant in real time. If the variant group's error rate spikes, flip the flag back to control. That's your kill switch — no redeploy, no incident, no rollback PR.
+You will see the error rate split by variant in real time. If the variant group's error rate spikes, flip the flag back to control. No redeploy, no incident, no rollback PR.
 
-You can also automate this: create a Datadog monitor on the variant error rate and trigger a circuit breaker that disables the flag automatically when the threshold is crossed.
+In the **Experiments** tab of your feature flag, configure:
+- **Failure metric** — RUM Errors filtered by `@error.type:CheckoutError`
+- **Conversion metric** — RUM Action `checkout_clicked`
+
+Datadog will calculate relative lift and statistical significance automatically.
+
+---
+
+## Product Analytics: measuring the full funnel
+
+A/B testing tells you which button variant converts better at the moment of the click. Product Analytics tells you whether users even got to the button.
+
+Track each step of the funnel as a RUM action:
+
+```ts
+datadogRum.addAction('landing_viewed');
+datadogRum.addAction('product_viewed', { product_id: 'watch-001', price: 299 });
+datadogRum.addAction('cart_viewed', { items: 1, total: 299 });
+datadogRum.addAction('checkout_viewed', { variant });
+datadogRum.addAction('purchase_completed', { variant, total: 299 });
+```
+
+In Datadog **Product Analytics > Funnels**, create a funnel with these actions in order. You will immediately see drop-off rate at each step, where the biggest leaks are, and whether the variant group converts differently across the entire funnel, not just at checkout.
+
+This is the insight that changes the question from "which button is better?" to "why are 55% of users dropping off before they even reach the cart?"
+
+### Session Replay closes the loop
+
+Every session in the funnel is automatically recorded. When you see a drop-off spike at the cart step, click into a session replay and watch what that user actually did. No extra instrumentation. No guessing.
+
+You can also break down the funnel by feature flag variant using **Break down by** in the funnel builder. Set it to `@feature_flags.checkout_button_variant` and you get two parallel funnels, one for control users and one for variant, so you can compare drop-off across the entire journey.
 
 ---
 
 ## Going server-side: Node.js + APM
 
-Browser-side evaluation is great for UI experiments, but some targeting rules don't belong in the browser — account tier, internal employee flags, billing status. For those, evaluate on the server.
-
-Datadog's Node.js SDK uses `dd-trace` under the hood, which means flag evaluations automatically attach to APM traces:
+Browser-side evaluation works for UI experiments. Server-side is for anything using sensitive user attributes like account tier, billing status, or internal employee flags that should not live in client-side code.
 
 ```bash
 npm install dd-trace @openfeature/server-sdk
@@ -200,9 +212,7 @@ import { OpenFeature } from '@openfeature/server-sdk';
 tracer.init({
   service: 'checkout-api',
   env: 'production',
-  experimental: {
-    flaggingProvider: { enabled: true },
-  },
+  experimental: { flaggingProvider: { enabled: true } },
 });
 
 OpenFeature.setProvider(tracer.openfeature);
@@ -218,65 +228,52 @@ const variant = await client.getStringValue(
 );
 ```
 
-Every request that evaluates the flag gets a trace span annotated with the flag result. In Datadog APM, you can filter traces by variant and compare latency, error rates, and downstream service calls — the same analysis as RUM, but at the infrastructure layer.
+Every request gets a trace span annotated with the flag result. In **APM > Traces**, filter by variant and compare p95 latency, error rates, and downstream calls between control and variant.
+
+Note: this requires Datadog Agent 7.55+ with Remote Configuration enabled. Without Remote Configuration, the Agent cannot distribute flag configurations to the SDK.
 
 ### Which side should evaluate the flag?
 
-This is a real architectural decision teams get wrong. A rough guide:
+- **Browser** — UI changes, copy, colors. Targeting based on URL or anonymous session.
+- **Server** — Pricing logic, algorithms, sensitive user attributes. Anything you do not want exposed in client-side code.
 
-- **Browser** — UI changes, copy, colors, layout. Targeting based on URL, browser, anonymous session.
-- **Server** — Pricing logic, algorithm changes, anything using sensitive user attributes (email, account tier, employee flag). Targeting based on data you don't want in client-side code.
-
-When in doubt, evaluate on the server and pass the variant down to the client. You get the security benefits of server-side evaluation with the UX benefits of client-side rendering.
+When in doubt, evaluate on the server and pass the variant down to the client.
 
 ---
 
 ## What to look at in Datadog
 
-Once your experiment is running, here's where to find the data:
-
-**RUM → Sessions** — every session tagged with which variant the user saw. Filter by `@feature_flags.checkout_button_variant:variant` to see only variant sessions.
-
-**RUM → Errors** — errors split by variant. This is your early warning system.
-
-**RUM → Session Replay** — recordings for sessions in each variant. If variant users are rage-clicking or dropping off, you'll see it here without any extra instrumentation.
-
-**APM → Traces** (server-side only) — traces annotated with flag evaluations. Compare p95 latency between control and variant on your checkout endpoint.
+| Where | What you get |
+|---|---|
+| **RUM > Sessions** | Every session tagged with the flag variant |
+| **RUM > Errors** | Error rate split by variant, your kill switch signal |
+| **RUM > Session Replay** | Recordings correlated with flag variant and funnel step |
+| **Feature Flags > Experiments** | Statistical lift, conversion vs. failure metrics |
+| **Product Analytics > Funnels** | Full funnel drop-off broken down by variant |
+| **APM > Traces** | Server-side flag evaluations correlated with latency |
 
 ---
 
 ## The pattern in three steps
 
 1. **Deploy** — ship the code behind a flag, off by default
-2. **Roll out** — enable the flag for 5% of users, watch RUM and APM for 24 hours
-3. **Decide** — error rate stable? Increase to 50%, then 100%. Spike? Flip the flag back in seconds.
+2. **Roll out** — enable for 5% of users, watch RUM, APM, and the funnel for 24 hours
+3. **Decide** — metrics stable? Increase to 50%, then 100%. Spike? Flip the flag back in seconds.
 
-The key insight is that step 3 is always available. You never have to choose between "ship fast" and "ship safely" — the flag gives you both.
+The key insight is that step 3 is always available. You never have to choose between shipping fast and shipping safely.
 
 ---
 
 ## Running the sandbox
 
-Clone the repo and set up your keys:
-
 ```bash
-git clone <repo-url>
-cd ab-test-sandbox/client
+git clone https://github.com/mamiura/ab-test-sandbox-
+cd ab-test-sandbox-/client
 cp .env.example .env
 # Add your Datadog Application ID and Client Token
 npm install && npm run dev
 ```
 
-Create a flag named `checkout_button_variant` in **Datadog → Software Delivery → Feature Flags** with two string variants: `control` and `variant`. Set a 50% rollout rule, enable the flag, and reload the sandbox.
+Create a flag named `checkout_button_variant` in **Datadog > Software Delivery > Feature Flags** with two string variants (`control`, `variant`), set a 50% rollout rule, enable it for `production`, and reload the sandbox.
 
-For the server-side example:
-
-```bash
-cd ab-test-sandbox/server
-DD_AGENT_HOST=localhost npm run dev
-curl "http://localhost:3001/api/variant?userId=your-user-id"
-```
-
----
-
-The sandbox shows both approaches side by side with a working error simulator and kill switch demo. Everything that shows up in the screenshots is real data from a live Datadog org — no mocks.
+Walk through the funnel, use the user switcher to simulate different users, and watch the data appear in Datadog RUM, Product Analytics, and the Experiments tab.

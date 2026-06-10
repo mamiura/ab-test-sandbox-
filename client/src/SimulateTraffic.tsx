@@ -43,7 +43,7 @@ export function SimulateTraffic() {
   async function simulate() {
     setRunning(true);
     setCount(0);
-    const total = 50;
+    const total = 1000;
     for (let i = 0; i < total; i++) {
       const userId = `sim-user-${Date.now()}-${i}`;
       const variant = i % 2 === 0 ? 'control' : 'variant';
@@ -57,9 +57,9 @@ export function SimulateTraffic() {
   return (
     <div className="simulate-traffic">
       <button className="simulate-btn" onClick={simulate} disabled={running}>
-        {running ? `Simulating… ${count}/50 users` : 'Simulate 50 Users'}
+        {running ? `Simulating… ${count}/1000 users` : 'Simulate 1000 Users'}
       </button>
-      {!running && count === 50 && (
+      {!running && count === 1000 && (
         <span className="simulate-done">Done — close and reopen the tab to flush events, then refresh the funnel in Datadog.</span>
       )}
     </div>
