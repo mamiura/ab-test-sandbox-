@@ -212,11 +212,61 @@ When in doubt, evaluate on the server and pass the variant down to the client.
 
 ---
 
+## Reducing sample size with CUPED
+
+Running an A/B test costs time. Every day you run, you are holding back a better experience from half your users, or shipping a worse one. The faster you can reach statistical significance, the faster you can ship the winner.
+
+CUPED (Controlled-experiment Using Pre-Experiment Data) is a variance reduction technique introduced by Microsoft Research in 2013 and now used by Netflix, Airbnb, LinkedIn, and Booking.com. The core idea: use what you already know about each user to remove noise from the experiment result.
+
+### The problem CUPED solves
+
+Your conversion metric has variance. Some users always buy. Some users never buy. That pre-existing difference has nothing to do with your experiment, but it shows up in your data and makes it harder to detect the actual signal.
+
+If user A always converts at 80% and user B always converts at 20%, and both end up in the control group, the average for control is noisy regardless of what your button looks like.
+
+CUPED strips that noise out.
+
+### How it works
+
+For each user, you compute a covariate X: something measured before the experiment started, such as their conversion rate in the prior 30 days. Then you adjust their experiment-period outcome Y:
+
+```
+Y_cuped = Y - theta * X
+```
+
+Where theta is estimated from the data:
+
+```
+theta = Cov(Y, X) / Var(X)
+```
+
+The adjustment subtracts the portion of Y that is already explained by X. What is left is cleaner signal. Users who always convert are no longer inflating the variant group. Users who never convert are no longer dragging down the control group.
+
+In practice, if the covariate correlates with the outcome at r = 0.7, CUPED reduces variance by 49%. That means you can reach the same statistical power with roughly half the sample size, or reach significance in half the time.
+
+### What this requires from your instrumentation
+
+Datadog can apply CUPED automatically when pre-experiment user data is available, but it needs a stable user identity to look up that history. This is why calling `datadogRum.setUser()` matters beyond just retention analysis:
+
+```ts
+datadogRum.setUser({ id: userId, name: userName });
+```
+
+Without a consistent user ID, Datadog cannot match experiment sessions to pre-experiment behavior. Anonymous sessions have no history to adjust against. The earlier you call `setUser()` in the session, the more pre-experiment data Datadog can pull for each user.
+
+### What you get in practice
+
+For a checkout experiment with typical conversion variance, CUPED can cut the required sample size by 30 to 50 percent. If you originally needed 10,000 users per variant to detect a 5% lift, you may only need 5,000 to 7,000 after adjustment.
+
+The math runs automatically on Datadog's side when pre-experiment data exists. Your job is to make sure users are identified consistently across sessions so the history is there to use.
+
+---
+
 ## The pattern in three steps
 
-1. **Deploy** — ship the code behind a flag, off by default
-2. **Roll out** — enable for 5% of users, watch RUM, APM, and the funnel for 24 hours
-3. **Decide** — metrics stable? Increase to 50%, then 100%. Spike? Flip the flag back in seconds.
+1. **Deploy** -- ship the code behind a flag, off by default
+2. **Roll out** -- enable for 5% of users, watch RUM, APM, and the funnel for 24 hours
+3. **Decide** -- metrics stable? Increase to 50%, then 100%. Spike? Flip the flag back in seconds.
 
 The key insight is that step 3 is always available. You never have to choose between shipping fast and shipping safely.
 
