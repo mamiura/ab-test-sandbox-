@@ -46,8 +46,16 @@ For logged-in experiences, this is one of the strongest arguments for backend ev
 
 Backend flags are evaluated on the server. The flag SDK runs inside your service, and the evaluation result stays server-side. The client only receives what the server decides to send.
 
+```bash
+npm install @openfeature/server-sdk dd-trace
+```
+
 ```ts
+import { OpenFeature } from '@openfeature/server-sdk';
+
+// initialize once at startup (see Going Server-Side section of the companion post)
 const client = OpenFeature.getClient();
+
 const variant = await client.getStringValue(
   'recommendation_algorithm',
   'baseline',
@@ -72,12 +80,17 @@ What they are not good for:
 The most robust pattern for full-stack experiments is to evaluate on the server and pass the result down to the client. The server decides the variant, the client renders it.
 
 ```ts
+import { OpenFeature } from '@openfeature/server-sdk';
+
 // Server: evaluate and include in the API response
+const client = OpenFeature.getClient();
 const variant = await client.getStringValue('checkout_redesign', 'control', {
   targetingKey: req.session.userId,
 });
 res.json({ ...pageData, variant });
+```
 
+```ts
 // Client: render based on what the server decided
 const { variant } = await fetchPageData();
 ```
@@ -113,6 +126,10 @@ The success condition is simple: no spike in errors, no performance regression, 
 Rollout flags should be short-lived. A flag that stays in the codebase at 100% for more than a few weeks is technical debt. The code path it controls should become the default and the flag should be deleted.
 
 ```ts
+import { OpenFeature } from '@openfeature/server-sdk';
+
+const client = OpenFeature.getClient();
+
 // Rollout flag: binary, short-lived, safety-focused
 const useNewPaymentProcessor = await client.getBooleanValue(
   'new_payment_processor',
@@ -140,6 +157,11 @@ Unlike a rollout flag, an experiment flag needs:
 - A time window long enough to account for day-of-week effects
 
 ```ts
+import { OpenFeature } from '@openfeature/server-sdk';
+import { datadogRum } from '@datadog/browser-rum';
+
+const client = OpenFeature.getClient();
+
 // Experiment flag: multi-variant, metric-driven, data-focused
 const variant = await client.getStringValue(
   'signup_flow_variant',
@@ -205,6 +227,8 @@ The secondary metrics protect you from winning on the primary metric but losing 
 Track each step of the user journey as a RUM action:
 
 ```ts
+import { datadogRum } from '@datadog/browser-rum';
+
 datadogRum.addAction('signup_started', { variant });
 datadogRum.addAction('email_entered', { variant });
 datadogRum.addAction('profile_completed', { variant });

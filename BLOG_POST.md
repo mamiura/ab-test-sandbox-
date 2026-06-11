@@ -27,7 +27,7 @@ A typical experiment tests two variants of a user-facing interaction: a differen
 ### Install the SDK
 
 ```bash
-npm install @datadog/openfeature-browser @openfeature/react-sdk @openfeature/web-sdk @openfeature/core
+npm install @datadog/browser-rum @datadog/openfeature-browser @openfeature/react-sdk @openfeature/web-sdk @openfeature/core
 ```
 
 ### Initialize the provider
@@ -73,6 +73,8 @@ The `DatadogProvider` automatically calls `datadogRum.addFeatureFlagEvaluation()
 ### Track user identity
 
 ```ts
+import { datadogRum } from '@datadog/browser-rum';
+
 datadogRum.setUser({ id: userId, name: userName });
 ```
 
