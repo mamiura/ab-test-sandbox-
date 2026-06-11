@@ -2,9 +2,9 @@
 
 Feature flags are one of those tools that sound simple until you try to use them at scale. You add a flag, wrap some code, ship it. Easy. Then you have ten flags, then fifty, and suddenly you are debugging why a user in production is seeing behavior that does not match what the flag configuration says it should be.
 
-The root cause is almost always the same: the team never made a deliberate decision about where flags should live, what they should control, and what question they are trying to answer.
+The root cause is almost always the same: the team never made a deliberate decision about where flags should live, what they should control, what question they are trying to answer, or who is responsible for cleaning them up.
 
-This post breaks down three decisions that matter most.
+This post breaks down four decisions that matter most.
 
 ---
 
@@ -37,6 +37,10 @@ What they are not good for:
 - Logic that needs to be consistent across multiple services
 
 The key constraint with frontend flags is that the evaluation happens in an environment you do not control. Anyone can open DevTools and see the flag configuration. That is fine for a button color or a headline variant. It is not fine for "show enterprise pricing to users on the free plan."
+
+**A subtler problem: cross-device consistency.** If your targeting relies on client-side identifiers like a cookie or an anonymous session ID, the same user can land in different variants depending on where they open your app. They visit on a laptop and get variant A. They open on mobile and get variant B. The experiment is now broken for that user, and your results are contaminated with cross-device noise.
+
+For logged-in experiences, this is one of the strongest arguments for backend evaluation. When the server uses a stable user identity as the targeting key, the same user always gets the same variant regardless of device, browser, or session state.
 
 ### Backend flags
 
@@ -143,12 +147,11 @@ const variant = await client.getStringValue(
   { targetingKey: req.session.userId }
 );
 
-// Track the exposure so your analytics platform can correlate it
 datadogRum.addFeatureFlagEvaluation('signup_flow_variant', variant);
 datadogRum.addAction('signup_step_viewed', { step: 'email', variant });
 ```
 
-The critical difference: you do not end an experiment early just because the variant looks better after two days. You wait for statistical significance. Ending early inflates your false positive rate and leads to decisions you will regret when the effect does not hold at scale.
+A common mistake is ending experiments early because the variant looks better after two days. Unless you are using a sequential testing methodology specifically designed for early stopping (Bayesian inference, SPRT, or a continuous monitoring framework), wait for your predetermined sample size. Peeking and stopping early inflates your false positive rate and leads to decisions that do not hold at scale.
 
 ### When to use which
 
@@ -167,7 +170,7 @@ A useful rule of thumb: if you already know what the right answer is and you are
 
 ## Decision 3: What to measure
 
-This is where most teams stop short. They set up the flag, they run the rollout or the experiment, and then they eyeball a dashboard and make a gut call.
+This is where most teams stop short. They set up the flag, run the rollout or experiment, and then eyeball a dashboard and make a gut call.
 
 Gut calls are fine when the signal is obvious: a 10x spike in errors is not subtle. But for experiments, gut calls are dangerous because human brains are wired to see patterns that are not there.
 
@@ -175,13 +178,13 @@ Gut calls are fine when the signal is obvious: a 10x spike in errors is not subt
 
 You need guardrail metrics: things that should not change. Error rate, p95 latency, session length. If any of these move in the wrong direction during the rollout, stop and investigate before increasing traffic.
 
-In Datadog, filter RUM errors and APM traces by your flag evaluation:
+Most flag providers, including Datadog, LaunchDarkly, and Statsig, let you attach your RUM or APM metrics directly to the flag configuration. In Datadog specifically, flag evaluations are natively correlated with RUM sessions and APM traces, so you can filter any metric by the variant without exporting data or writing custom queries.
 
 ```
 @feature_flags.new_payment_processor:true
 ```
 
-If the error rate for the flagged group diverges from the control group, you have found your signal. Set up a monitor on that filter so you get paged rather than discovering it in the morning.
+Apply that filter in RUM Errors or APM Traces and you immediately see whether the flagged group diverges from the control group. Set up a monitor on that filter so you get alerted rather than discovering the regression the next morning.
 
 ```
 # Datadog monitor query for rollout guardrail
@@ -199,7 +202,7 @@ Secondary metrics: error rate, session duration, step abandonment rate.
 
 The secondary metrics protect you from winning on the primary metric but losing somewhere else. A new signup flow that completes more signups but drives more errors downstream is not a win.
 
-In Datadog Product Analytics, build the funnel that matches your experiment scope:
+Track each step of the user journey as a RUM action:
 
 ```ts
 datadogRum.addAction('signup_started', { variant });
@@ -208,9 +211,61 @@ datadogRum.addAction('profile_completed', { variant });
 datadogRum.addAction('signup_completed', { variant });
 ```
 
-Then break the funnel down by `@feature_flags.signup_flow_variant`. You can see whether the variant converts better at every step, not just at the final conversion event.
+In Datadog Product Analytics, build a funnel with these actions in order, then break it down by `@feature_flags.signup_flow_variant`. You can see whether the variant converts better at every step, not just at the final conversion event.
 
-In the **Experiments** tab of the feature flag, configure your primary and failure metrics. Datadog calculates relative lift and statistical significance automatically and shows you how many more exposures you need before the result is trustworthy.
+---
+
+## Decision 4: Where does evaluation data go?
+
+This decision does not get enough attention, and it is where most teams leave value on the table.
+
+Flag evaluation and measurement are separate concerns, but they need to talk to each other. The typical flow looks like this:
+
+1. **Flag provider evaluates** -- decides which variant each user sees and records the exposure
+2. **Observability platform measures** -- captures what those users actually did: errors, latency, actions, sessions
+3. **Analytics platform decides** -- joins the exposure data with the outcome data and computes lift
+
+The problem: if these are three separate systems, someone has to export flag exposures, join them to session data, and build the analysis manually. That is the work that prevents most teams from actually measuring their flags.
+
+The reason native integration matters is that the join happens automatically. In Datadog, flag evaluations are recorded directly into the RUM session at the moment of evaluation. There is no export, no ETL, no separate analysis pipeline. Every error, every action, every session replay, every APM trace is already tagged with the flag variant.
+
+That means you can ask questions like:
+
+- Which variant had higher p95 latency on checkout requests? (APM > Traces, filter by variant)
+- Did variant B users have longer sessions? (RUM > Sessions, group by flag)
+- Where in the funnel did variant A users drop off compared to variant B? (Product Analytics > Funnels, break down by flag)
+- What did users in the losing variant actually do before they dropped off? (Session Replay, filter by flag)
+
+These are questions you can answer in minutes, not days, because the data is already connected.
+
+The practical implication for instrumentation: call `datadogRum.addFeatureFlagEvaluation()` at the moment of evaluation (the `DatadogProvider` does this automatically if you use the OpenFeature integration), and call `datadogRum.setUser()` with a stable user ID as early in the session as possible. The user identity is what enables Datadog to pull pre-experiment behavior for variance reduction, and what ties cross-session events back to the same person.
+
+---
+
+## Flag ownership and expiration
+
+At scale, the biggest feature flag problem is not frontend vs backend, and it is not rollout vs experiment. It is this:
+
+**Nobody knows who owns this flag anymore.**
+
+You have a flag called `new_dashboard_layout` that has been at 100% for eight months. It was created by an engineer who left the company. The product manager who requested it moved to a different team. The flag is doing nothing, but nobody is confident enough to delete it.
+
+This is how codebases accumulate dead code wrapped in conditional logic that nobody understands.
+
+Every flag should have four things documented at creation:
+
+- **Owner** -- the team or individual responsible for the decision to ship or remove it
+- **Creation date** -- when it went into the codebase
+- **Expected removal date** -- a specific target, not "when we're done"
+- **Purpose** -- one sentence on what question this flag is answering or what risk it is managing
+
+Most flag management tools, including Datadog, support custom metadata on flags. Use it. A flag with no expected removal date is a flag that will never be removed.
+
+The expected removal date is not a hard deadline. It is a forcing function. When the date passes, someone has to make an active decision to extend it, which means someone has to look at the flag, understand its current state, and decide whether it still needs to exist. That is the behavior you want.
+
+For experiment flags, the removal date is straightforward: set it to when you expect to reach statistical significance. For rollout flags, set it to when you expect to hit 100% and clean up. For kill switches and long-lived operational flags, set a review date instead of a removal date, and revisit on that schedule.
+
+The team that takes flag hygiene seriously ends up with a codebase that is easier to reason about and an experimentation program that is faster to run, because nobody is spending time debugging flag interactions from six months ago.
 
 ---
 
@@ -224,26 +279,30 @@ For a rollout: what does "safe" look like? Define your error rate threshold and 
 
 For an experiment: what is the minimum detectable effect you care about? Use a sample size calculator to figure out how long you need to run before you can trust the result. Skipping this step is how teams end up running experiments for two weeks and declaring a winner on a difference that is not real.
 
-**2. Instrument before you ship**
+**2. Document ownership at creation**
 
-Add your tracking calls before the flag goes live. You want baseline data from before the experiment starts so you have something to compare against. In Datadog, this is what enables CUPED: the variance reduction technique that uses pre-experiment user behavior to clean up your results. No baseline data means no variance reduction, which means you need more traffic to reach the same confidence.
+Fill in the owner, creation date, expected removal date, and purpose before the flag goes live. This takes two minutes and saves hours of archaeology later.
 
-**3. Start small**
+**3. Instrument before you ship**
+
+Add your tracking calls before the flag goes live. You want baseline data from before the experiment starts so you have something to compare against. In Datadog, this baseline is also what enables CUPED: the variance reduction technique that uses pre-experiment user behavior to reduce the sample size you need to reach significance. No baseline data means no variance reduction, which means you need more traffic to reach the same confidence.
+
+**4. Start small**
 
 Start rollout flags at 1 to 5 percent. Start experiment flags at a split that gives you statistical power within a reasonable time window -- usually 50/50 unless you have a specific reason to weight it differently.
 
-**4. Watch the guardrails**
+**5. Watch the guardrails**
 
 Set up monitors for your guardrail metrics before you increase traffic. In Datadog, create a monitor on error rate filtered by the flag variant and set an alert threshold. If it fires, the on-call engineer knows exactly which flag to turn off without having to investigate first.
 
-**5. Clean up**
+**6. Clean up**
 
-The most underrated step. After a rollout completes, delete the flag and the code path it controlled. After an experiment concludes, ship the winner, delete the loser, and remove the flag. Stale flags are the reason codebases become hard to reason about. A flag at 100% with no expiration date is just dead code with extra steps.
+The most important step, and the most skipped. After a rollout completes, delete the flag and the code path it controlled. After an experiment concludes, ship the winner, delete the loser, and remove the flag. If the expected removal date has passed and the flag is still live, treat that as a bug.
 
 ---
 
 ## The rule to remember
 
-Frontend flags for what users see. Backend flags for what the system does. Rollout flags for managing risk. Experiment flags for answering questions. Measure everything before you decide.
+Frontend flags for what users see. Backend flags for what the system does. Rollout flags for managing risk. Experiment flags for answering questions. Connect your evaluation data to your observability platform so you do not have to answer those questions manually. Document ownership so someone is always responsible for the answer.
 
 The discipline is not in the tooling. It is in making these decisions explicitly before you write a line of code.
