@@ -3,14 +3,14 @@ import { datadogRum } from '@datadog/browser-rum';
 import { identifyUser } from './analytics';
 
 const USERS = [
-  { id: 'user-001', name: 'Alice' },
-  { id: 'user-002', name: 'Bob' },
-  { id: 'user-003', name: 'Carol' },
-  { id: 'user-004', name: 'David' },
-  { id: 'user-005', name: 'Eve' },
-  { id: 'user-010', name: 'Frank' },
-  { id: 'user-020', name: 'Grace' },
-  { id: 'user-050', name: 'Heidi' },
+  { id: 'user-101', name: 'Alice' },
+  { id: 'user-102', name: 'Bob' },
+  { id: 'user-103', name: 'Carol' },
+  { id: 'user-104', name: 'David' },
+  { id: 'user-105', name: 'Eve' },
+  { id: 'user-106', name: 'Frank' },
+  { id: 'user-107', name: 'Grace' },
+  { id: 'user-108', name: 'Heidi' },
 ];
 
 interface Props {
