@@ -43,7 +43,7 @@ export default function App() {
       <SimulateTraffic />
       <main className="app-main">
         <Routes>
-          <Route path="/" element={<LandingPa/>} />
+          <Route path="/" element={<LandingPage />} />
           <Route path="/product" element={<ProductPage />} />
           <Route path="/cart" element={<CartPage />} />
           <Route path="/checkout" element={<CheckoutPage />} />
