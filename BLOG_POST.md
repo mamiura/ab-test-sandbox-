@@ -2,7 +2,7 @@
 
 You shipped a UI change to 100% of your users. Conversion dropped 12%. You rolled it back three hours later, but by then thousands of sessions had already hit the broken experience.
 
-This is not a hypothetical. It happens to teams of every size, and it usually happens for the same reason: the change was deployed and exposed to users at the same time. There was no middle ground between "off" and "everyone."
+This is not a hypothetical. It does happens to teams of every size, and it usually happens for the same reason: the change was deployed and exposed to users at the same time. There was no middle ground between "off" and "everyone."
 
 Feature flags fix this. They decouple deployment from release, letting you ship code to production and expose it to users gradually: 1%, 10%, 50%, with a kill switch at every step.
 
