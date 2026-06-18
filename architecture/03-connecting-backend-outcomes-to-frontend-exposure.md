@@ -6,6 +6,65 @@ The flag exposure happens on the frontend: the user opens the app, gets assigned
 
 Without a bridge, you have exposure data in RUM and conversion data in APM, but no way to join them and compute lift.
 
+## Architecture diagram
+
+```
+  EXPOSURE (frontend)                    OUTCOME (backend)
+  ──────────────────────────────────────────────────────────────────
+
+  ┌─────────────────────────────┐      ┌──────────────────────────┐
+  │         Mobile App          │      │    Offer Generation      │
+  │                             │      │       Service            │
+  │  datadogRum.setUser({       │      │                          │
+  │    id: "u123"               │      │  span.setTag(            │
+  │  })                         │      │    'usr.id', 'u123'      │
+  │                             │      │  )                       │
+  │  addFeatureFlagEvaluation(  │      │  span.setTag(            │
+  │    'loan_variant', 'B'      │      │    'loan_variant', 'B'   │
+  │  )                          │      │  )                       │
+  │                             │      │                          │
+  │  addAction(                 │      │  statsd.increment(       │
+  │    'loan_offer_presented'   │      │    'loan.offer.accepted',│
+  │  )                          │      │    { variant: 'B',       │
+  └──────────────┬──────────────┘      │      usr_id: 'u123' }   │
+                 │                     │  )                       │
+                 │                     └───────────┬──────────────┘
+                 │                                 │
+                 ▼                                 ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                          Datadog                                  │
+  │                                                                  │
+  │   RUM Session (usr.id: u123)        APM Trace (usr.id: u123)    │
+  │   ┌─────────────────────────┐       ┌────────────────────────┐  │
+  │   │ feature_flag: variant:B │       │ loan_variant: B        │  │
+  │   │ action: offer_presented │       │ span: offer.accepted   │  │
+  │   │ session_replay: yes     │       │ latency: 280ms         │  │
+  │   └─────────────────────────┘       └────────────────────────┘  │
+  │                     │                          │                 │
+  │                     └──────────┬───────────────┘                 │
+  │                                │  joined by usr.id               │
+  │                                ▼                                 │
+  │              ┌────────────────────────────────┐                  │
+  │              │   Feature Flags > Experiments   │                  │
+  │              │                                │                  │
+  │              │  Control: 31% offer accepted   │                  │
+  │              │  Variant: 44% offer accepted   │                  │
+  │              │  Lift: +42%  p < 0.05          │                  │
+  │              └────────────────────────────────┘                  │
+  └──────────────────────────────────────────────────────────────────┘
+
+  FALLBACK: offer accepted outside the app (email/SMS link)
+  ──────────────────────────────────────────────────────────────────
+
+  ┌──────────────────┐    ┌─────────────────────────────────────────┐
+  │   Email / SMS    │    │        Offer Generation Service          │
+  │   (user clicks   │    │                                         │
+  │    accept link)  │───►│  emits custom metric with usr.id +      │
+  │                  │    │  variant tag regardless of whether       │
+  │  no RUM session  │    │  app is open                            │
+  └──────────────────┘    └─────────────────────────────────────────┘
+```
+
 ## The bridge: stable user identity
 
 The connection point is the user ID. Both systems need to reference the same identifier.
@@ -28,23 +87,22 @@ tracer.scope().active()?.setTag('usr.id', req.user.id);
 tracer.scope().active()?.setTag('loan_application_variant', req.session.experimentVariant);
 ```
 
-When the offer is accepted, emit a RUM action from the mobile client if possible, and a custom metric from the backend:
+When the offer is accepted, emit a RUM action from the mobile client and a custom metric from the backend:
 
 ```ts
-// Mobile client -- if the offer acceptance response comes back to the app
+// Mobile client
 datadogRum.addAction('loan_offer_accepted', {
   variant: storedVariant,
   offer_amount: offer.amount,
-  user_id: user.id,
 });
 ```
 
 ```ts
-// Offer generation service -- backend confirmation
+// Offer generation service
 const statsd = tracer.dogstatsd;
 statsd.increment('loan.offer.accepted', 1, {
   variant: req.session.experimentVariant,
-  user_id: req.user.id,
+  usr_id: req.user.id,
 });
 ```
 
@@ -60,18 +118,18 @@ For the experiment metric, the backend custom metric is more reliable because it
 
 ## Datadog Product Analytics funnel
 
-```
-loan_application_started   (RUM action, frontend)
-identity_verified          (RUM action, frontend -- triggered by backend response)
-credit_score_received      (RUM action, frontend -- triggered by backend response)
-loan_offer_presented       (RUM action, frontend)
-loan_offer_accepted        (RUM action, frontend OR custom metric, backend)
+```ts
+datadogRum.addAction('loan_application_started', { variant });
+datadogRum.addAction('identity_verified', { variant });
+datadogRum.addAction('credit_score_received', { variant });
+datadogRum.addAction('loan_offer_presented', { variant });
+datadogRum.addAction('loan_offer_accepted', { variant });
 ```
 
 Break the funnel down by `@feature_flags.loan_application_variant`. This shows where each variant group drops off across the entire application journey, not just at the final step.
 
 ## Fallback: server-side event forwarding
 
-If the offer acceptance happens outside the app (the user clicks a link in an email), the mobile RUM session will not capture it. In this case, the backend service should emit the event to Datadog Logs or a custom metric with the user ID and variant tag. The experiment analysis reads from the metric rather than the RUM action.
+If the offer acceptance happens outside the app (the user clicks a link in an email), the mobile RUM session will not capture it. In this case, the backend service emits the event to a custom metric with the user ID and variant tag. The experiment analysis reads from the metric rather than the RUM action.
 
 This is a second reason why `datadogRum.setUser()` matters beyond session continuity: it is the key that lets you join any backend event back to the originating experiment exposure.

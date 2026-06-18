@@ -9,6 +9,87 @@ B. A general vendor degradation affecting all users equally
 
 Getting this wrong is costly in both directions. If you roll back the variant and the issue is general, you have lost experiment progress and delayed the decision. If you keep running and the variant is causing it, you have degraded 30% of your users' experience for no reason.
 
+## Architecture diagram
+
+```
+  TRAFFIC SPLIT AT 30% RAMP
+  ──────────────────────────────────────────────────────────────────
+
+            All Loan Applications
+                    │
+           ┌────────┴────────┐
+           │                 │
+      70% control       30% variant
+           │                 │
+           ▼                 ▼
+  ┌────────────────┐  ┌────────────────┐
+  │  Credit Score  │  │  Credit Score  │
+  │  Wrapper       │  │  Wrapper       │
+  │  variant:ctrl  │  │  variant:B     │
+  └───────┬────────┘  └───────┬────────┘
+          │                   │
+          └──────┬────────────┘
+                 │  both call same vendor
+                 ▼
+        ┌─────────────────┐
+        │   3rd Party     │
+        │  Credit Vendor  │
+        │                 │
+        │  latency spike  │
+        │  happening here │
+        └─────────────────┘
+
+  DATADOG APM SPLIT VIEW
+  ──────────────────────────────────────────────────────────────────
+
+  Filter: service:credit-scoring-wrapper span:credit_scoring.request
+  Group by: loan_application_variant
+
+  control  ████████░░░░░░░░░░░░░░░░░░░░  p95: 390ms   ◄── baseline
+  variant  ██████████████████████░░░░░░  p95: 1820ms  ◄── spike
+
+  Conclusion: variant is causing it (control is flat)
+
+  vs. general vendor degradation:
+
+  control  ██████████████████░░░░░░░░░░  p95: 1750ms  ◄── both up
+  variant  ████████████████████░░░░░░░░  p95: 1820ms  ◄── both up
+
+  Conclusion: general issue (both groups affected equally)
+
+  MONITOR: AUTOMATED ALERT ON DIVERGENCE
+  ──────────────────────────────────────────────────────────────────
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │  Datadog Monitor                                               │
+  │                                                               │
+  │  Query:                                                       │
+  │  avg(variant latency) > avg(control latency) * 1.5            │
+  │  for 5 consecutive minutes                                    │
+  │                                                               │
+  │  Alert fires ──► PagerDuty / Slack                            │
+  │                                                               │
+  │  On-call engineer sees:                                       │
+  │  "variant latency 4.7x control -- check loan_variant flag"   │
+  │                                                               │
+  │  Action: flip flag back to 0% in Datadog UI                  │
+  │  Time to remediation: < 2 minutes                            │
+  └────────────────────────────────────────────────────────────────┘
+
+  FUNNEL DROP-OFF AS EARLY WARNING
+  ──────────────────────────────────────────────────────────────────
+
+  Product Analytics Funnel (break down by variant)
+
+  Step                   Control    Variant B
+  ─────────────────────────────────────────────
+  loan_application_start  100%       100%
+  identity_verified        91%        90%
+  credit_score_received    87%        61%  ◄── drop-off spike here
+  loan_offer_presented     82%        58%      before error rate
+  loan_offer_accepted      31%        22%      reflects it
+```
+
 ## How to distinguish them with Datadog APM
 
 Because every trace is tagged with the variant (from Proposal 1), you can split the vendor latency by variant and look at the distributions independently.
@@ -24,11 +105,9 @@ Group by `loan_application_variant` and compare p95 latency:
 - If control p95 = 400ms and variant p95 = 1800ms: the variant is causing it
 - If control p95 = 1800ms and variant p95 = 1900ms: general vendor degradation
 
-The latency of the vendor call is captured in your wrapper span (from Proposal 2) even though the vendor itself is not instrumented. You are measuring your call to them, which is the number that matters.
+The latency of the vendor call is captured in your wrapper span even though the vendor itself is not instrumented. You are measuring your call to them, which is the number that matters.
 
 ## Proactive monitoring: automated split alert
-
-Do not wait to investigate manually. Set up a monitor that alerts when variant latency diverges from control latency:
 
 ```
 # Datadog monitor: variant latency divergence
@@ -38,11 +117,7 @@ avg:trace.credit_scoring.request.duration{loan_application_variant:variant}
 
 Alert condition: variant p95 exceeds control p95 by more than 50% for 5 consecutive minutes.
 
-This fires before the engineering team notices the spike in a dashboard. The on-call engineer sees immediately that the issue is variant-specific, not general.
-
-## Adding error rate to the signal
-
-Latency alone may not tell the full story. The vendor might be timing out and returning errors rather than slow responses. Add a parallel monitor on error rate:
+Add a parallel monitor on error rate:
 
 ```
 # Error rate divergence
@@ -50,11 +125,7 @@ sum:trace.credit_scoring.request.errors{loan_application_variant:variant}.as_rat
   > sum:trace.credit_scoring.request.errors{loan_application_variant:control}.as_rate() * 2
 ```
 
-If both latency and error rate are elevated for the variant group and flat for control, the evidence is strong that the variant is triggering different vendor behavior. This could be:
-
-- The variant passes different parameters to the credit scoring API (a higher loan amount, a different scoring model)
-- The vendor's system handles variant-triggered requests differently due to a data characteristic of the variant cohort
-- A bug introduced alongside the variant code that corrupts the vendor request
+If both latency and error rate are elevated for the variant group and flat for control, the evidence is strong that the variant is triggering different vendor behavior.
 
 ## Using RUM to see the user impact
 

@@ -6,6 +6,57 @@ The loan application spans 8 steps across a mobile frontend and three backend se
 
 If each layer evaluates independently, you get divergence. The frontend puts the user in the variant. The identity service evaluates separately and puts them in control. The offer generation service sees a third result. The experiment is broken before it starts.
 
+## Architecture diagram
+
+```
+                        ┌─────────────────────────┐
+                        │       Mobile App         │
+                        │   (no flag evaluation    │
+                        │    before login)         │
+                        └────────────┬────────────┘
+                                     │  authenticated request
+                                     ▼
+                        ┌─────────────────────────┐
+                        │       API Gateway        │◄─── Remote Config
+                        │                         │     (flag rules from
+                        │  OpenFeature            │      Datadog Agent)
+                        │  .getStringValue(       │
+                        │    targetingKey: user.id │
+                        │  )  ──► variant: "B"    │
+                        └────────────┬────────────┘
+                                     │ writes assignment
+                                     ▼
+                        ┌─────────────────────────┐
+                        │      Session Store       │
+                        │  { user_id: "u123",     │
+                        │    variant: "B",         │
+                        │    app_id: "loan-456" }  │
+                        └──────┬─────┬──────┬─────┘
+                               │     │      │  reads variant
+                               │     │      │  (no re-evaluation)
+                    ┌──────────┘     │      └──────────┐
+                    ▼                ▼                  ▼
+         ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
+         │   Identity   │  │    Credit    │  │     Offer        │
+         │  Verification│  │   Scoring    │  │   Generation     │
+         │              │  │  (3rd party  │  │                  │
+         │ reads variant│  │   wrapper)   │  │  emits outcome   │
+         │ from session │  │              │  │  event with      │
+         └──────────────┘  └──────────────┘  │  variant tag     │
+                                             └──────────────────┘
+                                                      │
+                                                      ▼
+                                          ┌──────────────────────┐
+                                          │       Datadog        │
+                                          │                      │
+                                          │  APM: all spans      │
+                                          │  tagged variant:B    │
+                                          │                      │
+                                          │  Experiments tab:    │
+                                          │  lift + significance │
+                                          └──────────────────────┘
+```
+
 ## Proposed architecture
 
 **Evaluate once, at the authenticated session boundary.**

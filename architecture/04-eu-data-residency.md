@@ -4,6 +4,59 @@
 
 No user behavioral data can leave the EU region. This covers RUM sessions, APM traces, logs, session replays, and any custom metrics that contain user identifiers.
 
+## Architecture diagram
+
+```
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                        EU REGION BOUNDARY                        │
+  │                                                                  │
+  │   ┌──────────────┐         ┌──────────────────────────────────┐ │
+  │   │  Mobile App  │         │         Backend Services          │ │
+  │   │              │         │                                  │ │
+  │   │  RUM SDK     │         │  dd-trace                        │ │
+  │   │  site:       │         │  DD_SITE=datadoghq.eu            │ │
+  │   │  datadoghq.eu│         │                                  │ │
+  │   │              │         │  ┌────────────────────────────┐  │ │
+  │   │  privacy:    │         │  │   Datadog Agent            │  │ │
+  │   │  mask (PII)  │         │  │   site: datadoghq.eu       │  │ │
+  │   └──────┬───────┘         │  │   Remote Config: enabled   │  │ │
+  │          │                 │  └────────────┬───────────────┘  │ │
+  │          │                 │               │                  │ │
+  │          └────────┬────────┘               │                  │ │
+  │                   │  all traffic           │                  │ │
+  │                   ▼  stays in EU           ▼                  │ │
+  │          ┌────────────────────────────────────────────┐       │ │
+  │          │            datadoghq.eu                     │       │ │
+  │          │                                            │       │ │
+  │          │  RUM sessions  APM traces  Logs  Metrics   │       │ │
+  │          │  Session Replay             Feature Flags  │       │ │
+  │          └────────────────────────────────────────────┘       │ │
+  │                                                                  │
+  │   ┌────────────────────────────────────────────────────────┐    │
+  │   │  3rd Party Credit Scoring Vendor                        │    │
+  │   │                                                         │    │
+  │   │  governed by vendor DPA, not by your Datadog config     │    │
+  │   │  your traces capture latency + response codes only,     │    │
+  │   │  not request payload -- stays compliant                 │    │
+  │   └────────────────────────────────────────────────────────┘    │
+  │                                                                  │
+  └─────────────────────────────────────────────────────────────────┘
+
+  SESSION REPLAY: PII MASKING LAYERS
+  ──────────────────────────────────────────────────────────────────
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Loan Application Screen                                      │
+  │                                                              │
+  │  [Step 3 of 8]          ← data-dd-privacy="allow" (visible) │
+  │                                                              │
+  │  Annual Income: ████    ← input field (auto-masked)          │
+  │  SSN: ████████          ← input field (auto-masked)          │
+  │                                                              │
+  │  [Continue]             ← data-dd-privacy="allow" (visible) │
+  └──────────────────────────────────────────────────────────────┘
+```
+
 ## Datadog configuration
 
 Datadog operates separate regional sites. EU data stays in the EU site (`datadoghq.eu`) and is physically isolated from the US site (`datadoghq.com`). This is a configuration choice made at account creation, not a filter applied after the fact.
@@ -19,10 +72,11 @@ import { DatadogProvider } from '@datadog/openfeature-browser';
 datadogRum.init({
   applicationId: 'your-application-id',
   clientToken: 'your-client-token',
-  site: 'datadoghq.eu',   // EU site
+  site: 'datadoghq.eu',
   service: 'loan-app',
   env: 'production',
   sessionReplaySampleRate: 100,
+  defaultPrivacyLevel: 'mask',
 });
 
 const provider = new DatadogProvider({
@@ -62,14 +116,7 @@ api_key: your-eu-api-key
 
 Session Replay requires extra attention in a fintech context. The loan application collects sensitive fields: income, social security numbers, account numbers. These must be masked before the replay is transmitted.
 
-```ts
-datadogRum.init({
-  site: 'datadoghq.eu',
-  defaultPrivacyLevel: 'mask',   // mask all text by default
-});
-```
-
-With `defaultPrivacyLevel: 'mask'`, all input fields are masked in replays. You can selectively unmask non-sensitive UI elements:
+With `defaultPrivacyLevel: 'mask'`, all input fields are masked in replays. Selectively unmask non-sensitive UI elements:
 
 ```html
 <button data-dd-privacy="allow">Submit Application</button>
@@ -81,11 +128,11 @@ This gives you usable replays for UX debugging without transmitting raw PII.
 
 ## Third-party vendor data boundary
 
-The credit scoring vendor processes user data outside your infrastructure. Whether their processing complies with EU data residency requirements is governed by their DPA (Data Processing Agreement), not by your Datadog configuration. Your Datadog traces capture only the latency and response codes of calls to the vendor -- not the content of the request or response. As long as you do not log request payloads containing personal data into APM spans, your observability data stays within compliance boundaries.
+The credit scoring vendor processes user data outside your infrastructure. Whether their processing complies with EU data residency requirements is governed by their DPA (Data Processing Agreement). Your Datadog traces capture only the latency and response codes of calls to the vendor, not the content of the request or response. As long as you do not log request payloads containing personal data into APM spans, your observability data stays within compliance boundaries.
 
 ## What breaks if this is misconfigured
 
-If the SDK is initialized with `datadoghq.com` instead of `datadoghq.eu`, session data is routed to US infrastructure. There is no error, no warning, and no indication in the UI that data crossed a region boundary. The misconfiguration is silent. This is why the site parameter should be managed through environment variables and validated at deployment, not hardcoded per-environment.
+If the SDK is initialized with `datadoghq.com` instead of `datadoghq.eu`, session data is routed to US infrastructure. There is no error, no warning, and no indication in the UI that data crossed a region boundary. The misconfiguration is silent. Manage the site parameter through environment variables and validate it at deployment, not hardcoded per environment.
 
 ## Checklist
 

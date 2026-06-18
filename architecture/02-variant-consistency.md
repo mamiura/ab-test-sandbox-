@@ -7,6 +7,73 @@ Two consistency guarantees are required:
 1. A user who starts an application on mobile and returns on desktop must see the same variant
 2. Three backend services, including one third-party vendor that cannot be instrumented, must all operate on the same variant assignment
 
+## Architecture diagram
+
+```
+  CROSS-DEVICE CONSISTENCY
+  ─────────────────────────────────────────────────────────────────────
+
+  Day 1 (mobile)                        Day 3 (laptop)
+  ┌───────────────┐                     ┌───────────────┐
+  │  Mobile App   │                     │  Web Browser  │
+  └──────┬────────┘                     └──────┬────────┘
+         │ login: user.id = "u123"             │ login: user.id = "u123"
+         ▼                                     ▼
+  ┌──────────────────────────────────────────────────────┐
+  │                    API Gateway                        │
+  │                                                      │
+  │  Day 1: evaluates flag → variant:B → writes session  │
+  │  Day 3: reads existing session → variant:B (no eval) │
+  └──────────────────────────────────────────────────────┘
+         │                                     │
+         ▼                                     ▼
+  ┌──────────────────────────────────────────────────────┐
+  │                   Session Store                       │
+  │  { user_id: "u123", variant: "B", app_id: "loan-1" } │
+  └──────────────────────────────────────────────────────┘
+
+  CROSS-SERVICE CONSISTENCY
+  ─────────────────────────────────────────────────────────────────────
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  API Gateway  variant: B                                          │
+  │  dd-trace span: loan_application_variant=B                        │
+  └──┬──────────────────────────┬──────────────────────┬─────────────┘
+     │ X-Experiment-Variant: B  │                      │
+     │ + trace context          │                      │
+     ▼                          ▼                      ▼
+  ┌────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+  │    Identity    │  │  Credit Scoring      │  │ Offer Generation │
+  │  Verification  │  │  Wrapper             │  │                  │
+  │                │  │                      │  │                  │
+  │ reads header:  │  │  your code: reads B  │  │ reads header: B  │
+  │ variant = B    │  │  vendor: unaware     │  │ variant = B      │
+  │                │  │  of experiment       │  │                  │
+  └────────────────┘  └──────────────────────┘  └──────────────────┘
+                               │
+                               ▼
+                      ┌─────────────────┐
+                      │  3rd Party API  │
+                      │  (credit vendor)│
+                      │                 │
+                      │  receives call  │
+                      │  unaware of     │
+                      │  variant        │
+                      └─────────────────┘
+
+  DATADOG VIEW
+  ─────────────────────────────────────────────────────────────────────
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  APM Trace (distributed)                                         │
+  │                                                                  │
+  │  [api-gateway] ──► [identity-svc] ──► [credit-wrapper]          │
+  │       │                  │                    │                  │
+  │  variant:B          variant:B            variant:B               │
+  │                                         vendor_latency:320ms     │
+  └──────────────────────────────────────────────────────────────────┘
+```
+
 ## Cross-device consistency
 
 The root cause of cross-device divergence is using a device-scoped identifier (cookie, device ID, anonymous session) as the targeting key. The fix is to evaluate the flag against a user-scoped identifier only after authentication.
@@ -19,8 +86,6 @@ All subsequent requests resolve variant from session record
 ```
 
 If the user closes the app and returns three days later on a different device, they authenticate and the variant is read from their session record. The flag SDK is not re-evaluated. The variant is deterministic for the lifetime of that application, regardless of device.
-
-This requires that you do not call `OpenFeature.setProvider()` with a targeting key until after login. Pre-login flows use the default value.
 
 ## Cross-service consistency
 
@@ -57,12 +122,6 @@ async function getCreditScore(userId: string, variant: string): Promise<CreditSc
 ```
 
 The vendor's behavior is a black box, but your wrapper span captures the latency, the response status, and the variant. In APM, you can filter on `loan_application_variant` and see the vendor's p95 latency split by variant without the vendor knowing the experiment exists.
-
-## Datadog integration
-
-Datadog's trace context propagation handles the internal service correlation automatically when `dd-trace` is initialized on each service. The `X-Experiment-Variant` header is a belt-and-suspenders backup for cases where trace context is not propagated (async jobs, batch processes, external queues).
-
-In **APM > Service Map**, filter by `@loan_application_variant:variant` to see which services are touched by variant traffic and whether any show elevated error rates.
 
 ## What breaks without this
 
