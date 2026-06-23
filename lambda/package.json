@@ -1,0 +1,22 @@
+{
+  "name": "lambda",
+  "version": "1.0.0",
+  "description": "Feature flag evaluation in AWS Lambda with Datadog",
+  "main": "dist/handler.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "USE_FALLBACK=true ts-node src/handler.ts",
+    "invoke:local": "USE_FALLBACK=true ts-node --transpile-only -e \"require('./src/handler').handler({ queryStringParameters: { userId: 'demo-user-101' }, requestContext: { authorizer: {} } }).then((r) => console.log(JSON.parse(r.body)))\""
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@openfeature/server-sdk": "^1.21.0",
+    "dd-trace": "^5.106.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.149",
+    "@types/node": "^25.9.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

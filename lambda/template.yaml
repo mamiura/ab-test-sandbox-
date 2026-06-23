@@ -1,0 +1,58 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ab-test-sandbox Lambda with Datadog Feature Flags
+
+# Layer ARNs change per region and runtime version.
+# Find the latest at: https://github.com/DataDog/datadog-lambda-js/releases
+# and: https://github.com/DataDog/datadog-lambda-extension/releases
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 256
+    Layers:
+      # Datadog Node.js tracer (dd-trace + OpenFeature server SDK)
+      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Node20-x:109
+      # Datadog Lambda Extension (Remote Config + telemetry shipper)
+      - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Extension:57
+    Environment:
+      Variables:
+        DD_SITE: !Ref DatadogSite
+        DD_ENV: !Ref Environment
+        DD_SERVICE: ab-test-sandbox-lambda
+        DD_API_KEY: !Ref DatadogApiKey
+        # Tells dd-trace to use the Lambda Extension rather than a local Agent
+        DD_LAMBDA_HANDLER: dist/handler.handler
+
+Parameters:
+  DatadogApiKey:
+    Type: String
+    NoEcho: true
+    Description: Datadog API key with Remote Configuration Read permission
+  DatadogSite:
+    Type: String
+    Default: datadoghq.com
+    Description: Datadog site (datadoghq.com or datadoghq.eu)
+  Environment:
+    Type: String
+    Default: production
+
+Resources:
+  VariantFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      # The Datadog layer wraps your handler via DD_LAMBDA_HANDLER
+      Handler: /opt/nodejs/node_modules/datadog-lambda-js/handler.handler
+      CodeUri: ./dist
+      Description: Evaluates checkout_button_variant flag for a given user ID
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /variant
+            Method: GET
+
+Outputs:
+  VariantApi:
+    Description: API Gateway endpoint
+    Value: !Sub https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/variant
